@@ -1,1 +1,39 @@
+#!/bin/bash
+# disk_usage.sh - Monitor disk usage and send alerts
 
+# Configuration
+THRESHOLD=80
+EMAIL="admin@company.com"
+LOG_FILE="/var/log/disk_usage.log"
+
+# Logging function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log "Disk usage check started"
+
+# Check disk usage for all mounted filesystems
+df -h | grep -vE '^Filesystem|tmpfs|cdrom' | awk '{print $5 " " $1 " " $6}' | while read output;
+do
+    usage=$(echo $output | awk '{print $1}' | cut -d'%' -f1)
+    partition=$(echo $output | awk '{print $2}')
+    mount=$(echo $output | awk '{print $3}')
+    
+    if [ $usage -ge $THRESHOLD ]; then
+        log "ALERT: $partition ($mount) is ${usage}% full"
+        
+        # Send email alert (if mail is configured)
+        if command -v mail >/dev/null 2>&1; then
+            echo "Warning: Disk usage on $partition ($mount) has reached ${usage}%" | \
+            mail -s "Disk Usage Alert - $(hostname)" "$EMAIL"
+        fi
+        
+        # Send to syslog
+        logger "DISK_ALERT: $partition ($mount) is ${usage}% full"
+    else
+        log "OK: $partition ($mount) is ${usage}% full"
+    fi
+done
+
+log "Disk usage check completed"
