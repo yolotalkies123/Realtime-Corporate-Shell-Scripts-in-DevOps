@@ -1,1 +1,46 @@
+#!/bin/bash
+# service_health.sh - Check critical services status
+
+# Configuration
+SERVICES=("nginx" "apache2" "mysql" "ssh" "cron")
+LOG_FILE="/var/log/service_health.log"
+EMAIL="admin@company.com"
+
+# Logging function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log "Service health check started"
+
+# Check each service
+for service in "${SERVICES[@]}"; do
+    if systemctl is-active --quiet "$service"; then
+        log "OK: $service is running"
+    else
+        log "ALERT: $service is not running"
+        
+        # Try to restart the service
+        log "Attempting to restart $service"
+        systemctl restart "$service"
+        
+        # Check if restart was successful
+        sleep 5
+        if systemctl is-active --quiet "$service"; then
+            log "SUCCESS: $service restarted successfully"
+        else
+            log "FAILED: $service restart failed"
+            
+            # Send email alert
+            if command -v mail >/dev/null 2>&1; then
+                echo "Service $service is down on $(hostname) and restart failed" | \
+                mail -s "Service Alert - $(hostname)" "$EMAIL"
+            fi
+        fi
+    fi
+done
+
+log "Service health check completed"
+
+
 
