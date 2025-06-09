@@ -1,1 +1,73 @@
+#!/bin/bash
+# db_backup.sh - Database backup script
 
+# Configuration
+DB_USER="backup_user"
+DB_PASS="backup_password"
+DB_NAME="production_db"
+BACKUP_DIR="/backup/database"
+DATE=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="/var/log/db_backup.log"
+RETENTION_DAYS=30
+
+# Create backup directory
+mkdir -p "$BACKUP_DIR"
+
+# Logging function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log "Database backup started for $DB_NAME"
+
+# MySQL Backup
+if command -v mysqldump >/dev/null 2>&1; then
+    BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_${DATE}.sql"
+    
+    mysqldump -u "$DB_USER" -p"$DB_PASS" \
+        --single-transaction \
+        --routines \
+        --triggers \
+        "$DB_NAME" > "$BACKUP_FILE"
+    
+    if [ $? -eq 0 ]; then
+        # Compress the backup
+        gzip "$BACKUP_FILE"
+        COMPRESSED_FILE="${BACKUP_FILE}.gz"
+        
+        # Calculate size
+        SIZE=$(du -sh "$COMPRESSED_FILE" | cut -f1)
+        log "MySQL backup completed successfully"
+        log "Backup file: $COMPRESSED_FILE"
+        log "Backup size: $SIZE"
+        
+        # Create checksum
+        sha256sum "$COMPRESSED_FILE" > "${COMPRESSED_FILE}.sha256"
+        log "Checksum created"
+    else
+        log "MySQL backup failed"
+        exit 1
+    fi
+fi
+
+# PostgreSQL Backup (alternative)
+if command -v pg_dump >/dev/null 2>&1; then
+    BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_${DATE}.sql"
+    
+    pg_dump -h localhost -U "$DB_USER" "$DB_NAME" > "$BACKUP_FILE"
+    
+    if [ $? -eq 0 ]; then
+        gzip "$BACKUP_FILE"
+        log "PostgreSQL backup completed successfully"
+    else
+        log "PostgreSQL backup failed"
+        exit 1
+    fi
+fi
+
+# Clean old backups
+log "Cleaning backups older than $RETENTION_DAYS days"
+find "$BACKUP_DIR" -name "*.sql.gz" -mtime +$RETENTION_DAYS -delete
+find "$BACKUP_DIR" -name "*.sha256" -mtime +$RETENTION_DAYS -delete
+
+log "Database backup completed"
