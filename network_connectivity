@@ -1,0 +1,50 @@
+#!/bin/bash
+# network_check.sh - Check network connectivity
+
+# Configuration
+HOSTS=("8.8.8.8" "google.com" "github.com" "192.168.1.1")
+LOG_FILE="/var/log/network_check.log"
+EMAIL="admin@company.com"
+
+# Logging function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log "Network connectivity check started"
+
+# Check connectivity to each host
+for host in "${HOSTS[@]}"; do
+    if ping -c 3 -W 3 "$host" >/dev/null 2>&1; then
+        log "OK: Can reach $host"
+    else
+        log "ALERT: Cannot reach $host"
+        
+        # Send alert
+        if command -v mail >/dev/null 2>&1; then
+            echo "Network connectivity to $host failed from $(hostname)" | \
+            mail -s "Network Alert - $(hostname)" "$EMAIL"
+        fi
+    fi
+done
+
+# Check DNS resolution
+if nslookup google.com >/dev/null 2>&1; then
+    log "OK: DNS resolution working"
+else
+    log "ALERT: DNS resolution failed"
+fi
+
+# Check default gateway
+GATEWAY=$(ip route | grep default | awk '{print $3}' | head -1)
+if [ -n "$GATEWAY" ]; then
+    if ping -c 3 -W 3 "$GATEWAY" >/dev/null 2>&1; then
+        log "OK: Default gateway ($GATEWAY) reachable"
+    else
+        log "ALERT: Default gateway ($GATEWAY) unreachable"
+    fi
+else
+    log "ALERT: No default gateway found"
+fi
+
+log "Network connectivity check completed"
