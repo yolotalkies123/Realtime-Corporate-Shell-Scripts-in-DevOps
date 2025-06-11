@@ -1,1 +1,418 @@
+#!/bin/bash
 
+# =============================================================================
+# UPDATE REPORT JSON SENDER
+# Collect system information and send as JSON to remote server
+# =============================================================================
+
+# Configuration
+REMOTE_SERVER="https://your-server.com/api/reports"
+API_KEY="your-api-key-here"
+LOG_FILE="/var/log/update_reporter.log"
+TEMP_JSON="/tmp/system_report.json"
+HOSTNAME=$(hostname)
+REPORT_ID=$(date +%s)
+
+# Logging function
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+# Function to escape JSON strings
+escape_json() {
+    echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n'
+}
+
+# Get system uptime
+get_uptime() {
+    uptime | awk '{print $3,$4}' | sed 's/,//'
+}
+
+# Get memory usage
+get_memory_usage() {
+    free | grep Mem | awk '{printf "%.2f", $3/$2 * 100.0}'
+}
+
+# Get disk usage
+get_disk_usage() {
+    df / | awk 'NR==2 {print $5}' | sed 's/%//'
+}
+
+# Get CPU usage
+get_cpu_usage() {
+    top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1
+}
+
+# Get load average
+get_load_average() {
+    uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//'
+}
+
+# Get package update information
+get_package_updates() {
+    if command -v apt >/dev/null 2>&1; then
+        # Ubuntu/Debian
+        apt list --upgradable 2>/dev/null | grep -c upgradable
+    elif command -v yum >/dev/null 2>&1; then
+        # CentOS/RHEL
+        yum list updates 2>/dev/null | grep -v "Updated Packages" | wc -l
+    elif command -v dnf >/dev/null 2>&1; then
+        # Fedora
+        dnf list updates 2>/dev/null | grep -v "Available Upgrades" | wc -l
+    else
+        echo "0"
+    fi
+}
+
+# Get security updates
+get_security_updates() {
+    if command -v apt >/dev/null 2>&1; then
+        apt list --upgradable 2>/dev/null | grep -i security | wc -l
+    elif command -v yum >/dev/null 2>&1; then
+        yum --security check-update 2>/dev/null | grep -v "Loaded plugins" | wc -l
+    else
+        echo "0"
+    fi
+}
+
+# Get running services status
+get_services_status() {
+    local services=("ssh" "nginx" "apache2" "mysql" "postgresql" "docker")
+    local service_status=""
+    
+    for service in "${services[@]}"; do
+        if systemctl is-active --quiet "$service" 2>/dev/null; then
+            service_status+="{\"name\":\"$service\",\"status\":\"active\"},"
+        elif systemctl list-unit-files | grep -q "^$service.service"; then
+            service_status+="{\"name\":\"$service\",\"status\":\"inactive\"},"
+        fi
+    done
+    
+    # Remove trailing comma
+    echo "${service_status%,}"
+}
+
+# Get network connectivity status
+get_network_status() {
+    local hosts=("8.8.8.8" "google.com")
+    local network_ok=true
+    
+    for host in "${hosts[@]}"; do
+        if ! ping -c 1 -W 3 "$host" >/dev/null 2>&1; then
+            network_ok=false
+            break
+        fi
+    done
+    
+    echo "$network_ok"
+}
+
+# Get last reboot time
+get_last_reboot() {
+    who -b | awk '{print $3, $4}'
+}
+
+# Generate JSON report
+generate_json_report() {
+    log_message "Generating JSON report..."
+    
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local uptime=$(get_uptime)
+    local memory_usage=$(get_memory_usage)
+    local disk_usage=$(get_disk_usage)
+    local cpu_usage=$(get_cpu_usage)
+    local load_avg=$(get_load_average)
+    local package_updates=$(get_package_updates)
+    local security_updates=$(get_security_updates)
+    local services_status=$(get_services_status)
+    local network_status=$(get_network_status)
+    local last_reboot=$(get_last_reboot)
+    local kernel_version=$(uname -r)
+    local os_version=$(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)
+    
+    # Create JSON structure
+    cat > "$TEMP_JSON" << EOF
+{
+  "report_id": "$REPORT_ID",
+  "timestamp": "$timestamp",
+  "hostname": "$HOSTNAME",
+  "system_info": {
+    "os_version": "$os_version",
+    "kernel_version": "$kernel_version",
+    "uptime": "$uptime",
+    "last_reboot": "$last_reboot"
+  },
+  "performance": {
+    "cpu_usage_percent": $cpu_usage,
+    "memory_usage_percent": $memory_usage,
+    "disk_usage_percent": $disk_usage,
+    "load_average": $load_avg
+  },
+  "updates": {
+    "available_updates": $package_updates,
+    "security_updates": $security_updates,
+    "last_check": "$timestamp"
+  },
+  "services": [
+    $services_status
+  ],
+  "network": {
+    "connectivity": $network_status
+  },
+  "health_status": "$(determine_health_status)"
+}
+EOF
+
+    log_message "JSON report generated: $TEMP_JSON"
+}
+
+# Determine overall health status
+determine_health_status() {
+    local cpu_usage=$(get_cpu_usage)
+    local memory_usage=$(get_memory_usage)
+    local disk_usage=$(get_disk_usage)
+    local network_status=$(get_network_status)
+    
+    # Remove any decimal points for comparison
+    cpu_usage=${cpu_usage%.*}
+    memory_usage=${memory_usage%.*}
+    
+    if [[ "$cpu_usage" -gt 90 ]] || [[ "$memory_usage" -gt 90 ]] || [[ "$disk_usage" -gt 90 ]]; then
+        echo "critical"
+    elif [[ "$cpu_usage" -gt 70 ]] || [[ "$memory_usage" -gt 70 ]] || [[ "$disk_usage" -gt 70 ]]; then
+        echo "warning"
+    elif [[ "$network_status" == "false" ]]; then
+        echo "degraded"
+    else
+        echo "healthy"
+    fi
+}
+
+# Send JSON to remote server using curl
+send_via_curl() {
+    log_message "Sending report via curl to $REMOTE_SERVER"
+    
+    local response=$(curl -s -w "\n%{http_code}" \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $API_KEY" \
+        -H "X-Report-ID: $REPORT_ID" \
+        -d @"$TEMP_JSON" \
+        "$REMOTE_SERVER" 2>/dev/null)
+    
+    local http_code=$(echo "$response" | tail -n1)
+    local response_body=$(echo "$response" | head -n -1)
+    
+    if [[ "$http_code" -eq 200 || "$http_code" -eq 201 ]]; then
+        log_message "Report sent successfully (HTTP $http_code)"
+        log_message "Server response: $response_body"
+        return 0
+    else
+        log_message "Failed to send report (HTTP $http_code)"
+        log_message "Error response: $response_body"
+        return 1
+    fi
+}
+
+# Send JSON using wget
+send_via_wget() {
+    log_message "Sending report via wget to $REMOTE_SERVER"
+    
+    local response=$(wget --quiet \
+        --method=POST \
+        --header="Content-Type: application/json" \
+        --header="Authorization: Bearer $API_KEY" \
+        --header="X-Report-ID: $REPORT_ID" \
+        --body-file="$TEMP_JSON" \
+        --output-document=- \
+        "$REMOTE_SERVER" 2>&1)
+    
+    if [[ $? -eq 0 ]]; then
+        log_message "Report sent successfully via wget"
+        log_message "Server response: $response"
+        return 0
+    else
+        log_message "Failed to send report via wget"
+        log_message "Error: $response"
+        return 1
+    fi
+}
+
+# Send to multiple endpoints
+send_to_multiple_endpoints() {
+    local endpoints=("$1" "$2" "$3")
+    local success_count=0
+    
+    for endpoint in "${endpoints[@]}"; do
+        if [[ -n "$endpoint" ]]; then
+            log_message "Attempting to send to $endpoint"
+            
+            local temp_server="$REMOTE_SERVER"
+            REMOTE_SERVER="$endpoint"
+            
+            if send_via_curl; then
+                ((success_count++))
+            fi
+            
+            REMOTE_SERVER="$temp_server"
+        fi
+    done
+    
+    log_message "Successfully sent to $success_count endpoints"
+    return $success_count
+}
+
+# Send with retry logic
+send_with_retry() {
+    local max_retries=3
+    local retry_delay=5
+    local attempt=1
+    
+    while [[ $attempt -le $max_retries ]]; do
+        log_message "Attempt $attempt of $max_retries"
+        
+        if send_via_curl; then
+            log_message "Report sent successfully on attempt $attempt"
+            return 0
+        else
+            if [[ $attempt -lt $max_retries ]]; then
+                log_message "Retry in $retry_delay seconds..."
+                sleep $retry_delay
+                retry_delay=$((retry_delay * 2))  # Exponential backoff
+            fi
+        fi
+        
+        ((attempt++))
+    done
+    
+    log_message "All retry attempts failed"
+    return 1
+}
+
+# Save report locally if sending fails
+save_local_backup() {
+    local backup_dir="/var/backups/reports"
+    local backup_file="$backup_dir/report_${HOSTNAME}_${REPORT_ID}.json"
+    
+    mkdir -p "$backup_dir"
+    
+    if cp "$TEMP_JSON" "$backup_file"; then
+        log_message "Report saved locally: $backup_file"
+    else
+        log_message "Failed to save local backup"
+    fi
+}
+
+# Send via different protocols
+send_via_webhook() {
+    local webhook_url="$1"
+    local slack_channel="${2:-#alerts}"
+    
+    # Format for Slack webhook
+    local slack_payload=$(cat << EOF
+{
+  "channel": "$slack_channel",
+  "username": "System Reporter",
+  "text": "System Update Report for $HOSTNAME",
+  "attachments": [
+    {
+      "color": "good",
+      "title": "System Report",
+      "fields": [
+        {
+          "title": "Hostname",
+          "value": "$HOSTNAME",
+          "short": true
+        },
+        {
+          "title": "Status",
+          "value": "$(determine_health_status)",
+          "short": true
+        },
+        {
+          "title": "Available Updates",
+          "value": "$(get_package_updates)",
+          "short": true
+        }
+      ],
+      "footer": "Generated at $(date)"
+    }
+  ]
+}
+EOF
+)
+    
+    curl -X POST \
+        -H "Content-Type: application/json" \
+        -d "$slack_payload" \
+        "$webhook_url"
+}
+
+# Main execution function
+main() {
+    log_message "=== Update Report Sender Started ==="
+    
+    # Check if running as root (recommended for system info)
+    if [[ $EUID -ne 0 ]]; then
+        log_message "WARNING: Not running as root. Some information may be limited."
+    fi
+    
+    # Generate the JSON report
+    generate_json_report
+    
+    # Validate JSON format
+    if ! python3 -m json.tool < "$TEMP_JSON" >/dev/null 2>&1; then
+        log_message "ERROR: Generated JSON is not valid"
+        exit 1
+    fi
+    
+    # Show report size
+    local file_size=$(du -h "$TEMP_JSON" | cut -f1)
+    log_message "Report size: $file_size"
+    
+    # Send the report
+    if send_with_retry; then
+        log_message "Report sent successfully"
+    else
+        log_message "Failed to send report, saving local backup"
+        save_local_backup
+        
+        # Try alternative method
+        if command -v wget >/dev/null 2>&1; then
+            log_message "Trying with wget as fallback"
+            send_via_wget
+        fi
+    fi
+    
+    # Clean up temporary file
+    rm -f "$TEMP_JSON"
+    
+    log_message "=== Update Report Sender Completed ==="
+}
+
+# Command line options
+case "${1:-}" in
+    --test)
+        echo "Testing JSON generation..."
+        generate_json_report
+        echo "Generated JSON:"
+        cat "$TEMP_JSON"
+        python3 -m json.tool < "$TEMP_JSON"
+        rm -f "$TEMP_JSON"
+        ;;
+    --webhook)
+        if [[ -n "$2" ]]; then
+            send_via_webhook "$2" "$3"
+        else
+            echo "Usage: $0 --webhook <webhook_url> [channel]"
+        fi
+        ;;
+    --backup)
+        generate_json_report
+        save_local_backup
+        rm -f "$TEMP_JSON"
+        ;;
+    *)
+        main "$@"
+        ;;
+esac
