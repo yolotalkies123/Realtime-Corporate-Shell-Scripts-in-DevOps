@@ -1,0 +1,103 @@
+#!/bin/bash
+# system_monitor.sh - Monitor system processes and memory usage
+
+# Configuration
+CPU_THRESHOLD=80
+MEMORY_THRESHOLD=80
+LOG_FILE="/var/log/system_monitor.log"
+EMAIL="admin@company.com"
+
+# Logging function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log "System monitoring check started"
+
+# Get current CPU usage
+CPU_USAGE=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1 | cut -d',' -f1)
+log "Current CPU usage: ${CPU_USAGE}%"
+
+# Check CPU threshold
+if (( $(echo "$CPU_USAGE > $CPU_THRESHOLD" | bc -l) )); then
+    log "ALERT: High CPU usage detected - ${CPU_USAGE}%"
+    
+    # Get top CPU processes
+    log "Top CPU consuming processes:"
+    ps aux --sort=-%cpu | head -6 | tee -a "$LOG_FILE"
+    
+    # Send alert
+    if command -v mail >/dev/null 2>&1; then
+        echo "High CPU usage on $(hostname): ${CPU_USAGE}%" | \
+        mail -s "High CPU Alert - $(hostname)" "$EMAIL"
+    fi
+fi
+
+# Get memory usage
+MEMORY_INFO=$(free | grep Mem)
+TOTAL_MEM=$(echo "$MEMORY_INFO" | awk '{print $2}')
+USED_MEM=$(echo "$MEMORY_INFO" | awk '{print $3}')
+MEMORY_PERCENT=$((USED_MEM * 100 / TOTAL_MEM))
+
+log "Memory usage: ${MEMORY_PERCENT}% ($(($USED_MEM / 1024))MB / $(($TOTAL_MEM / 1024))MB)"
+
+# Check memory threshold
+if [ "$MEMORY_PERCENT" -gt "$MEMORY_THRESHOLD" ]; then
+    log "ALERT: High memory usage detected - ${MEMORY_PERCENT}%"
+    
+    # Get top memory processes
+    log "Top memory consuming processes:"
+    ps aux --sort=-%mem | head -6 | tee -a "$LOG_FILE"
+    
+    # Send alert
+    if command -v mail >/dev/null 2>&1; then
+        echo "High memory usage on $(hostname): ${MEMORY_PERCENT}%" | \
+        mail -s "High Memory Alert - $(hostname)" "$EMAIL"
+    fi
+fi
+
+# Check for zombie processes
+ZOMBIES=$(ps aux | awk '{print $8}' | grep -c Z)
+if [ "$ZOMBIES" -gt 0 ]; then
+    log "WARNING: $ZOMBIES zombie processes detected"
+    ps aux | grep " Z " | tee -a "$LOG_FILE"
+fi
+
+# Check swap usage
+SWAP_INFO=$(free | grep Swap)
+TOTAL_SWAP=$(echo "$SWAP_INFO" | awk '{print $2}')
+USED_SWAP=$(echo "$SWAP_INFO" | awk '{print $3}')
+
+if [ "$TOTAL_SWAP" -gt 0 ]; then
+    SWAP_PERCENT=$((USED_SWAP * 100 / TOTAL_SWAP))
+    log "Swap usage: ${SWAP_PERCENT}% ($(($USED_SWAP / 1024))MB / $(($TOTAL_SWAP / 1024))MB)"
+    
+    if [ "$SWAP_PERCENT" -gt 50 ]; then
+        log "WARNING: High swap usage detected - ${SWAP_PERCENT}%"
+    fi
+else
+    log "No swap space configured"
+fi
+
+# Check load average
+LOAD_AVG=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | cut -d',' -f1)
+CPU_CORES=$(nproc)
+LOAD_PERCENT=$(echo "scale=0; $LOAD_AVG * 100 / $CPU_CORES" | bc)
+
+log "Load average: $LOAD_AVG (${LOAD_PERCENT}% of $CPU_CORES cores)"
+
+if [ "$LOAD_PERCENT" -gt 100 ]; then
+    log "ALERT: High load average detected - $LOAD_AVG"
+fi
+
+# Check disk I/O (if iostat is available)
+if command -v iostat >/dev/null 2>&1; then
+    log "Disk I/O statistics:"
+    iostat -x 1 1 | tail -n +4 | tee -a "$LOG_FILE"
+fi
+
+# Process count
+PROCESS_COUNT=$(ps aux | wc -l)
+log "Total processes: $PROCESS_COUNT"
+
+log "System monitoring check completed"
