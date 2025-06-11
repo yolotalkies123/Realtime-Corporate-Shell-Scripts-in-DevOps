@@ -1,0 +1,84 @@
+#!/bin/bash
+# http_response_check.sh - Monitor HTTP response times
+
+# Configuration
+URLS=("http://localhost" "https://google.com" "https://github.com")
+TIMEOUT=10
+THRESHOLD=5000  # milliseconds
+LOG_FILE="/var/log/http_response.log"
+EMAIL="admin@company.com"
+
+# Logging function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log "HTTP response time check started"
+
+# Function to check HTTP response time
+check_url() {
+    local url=$1
+    local start_time=$(date +%s%3N)
+    
+    # Make HTTP request and capture response code
+    response_code=$(curl -s -o /dev/null -w "%{http_code}" \
+                    --max-time "$TIMEOUT" \
+                    --connect-timeout "$TIMEOUT" \
+                    "$url" 2>/dev/null)
+    
+    local end_time=$(date +%s%3N)
+    local response_time=$((end_time - start_time))
+    
+    if [ "$response_code" -eq 200 ]; then
+        if [ "$response_time" -le "$THRESHOLD" ]; then
+            log "OK: $url - Response: ${response_time}ms (HTTP $response_code)"
+        else
+            log "SLOW: $url - Response: ${response_time}ms (HTTP $response_code)"
+            
+            # Send slow response alert
+            if command -v mail >/dev/null 2>&1; then
+                echo "$url is responding slowly: ${response_time}ms" | \
+                mail -s "Slow Response Alert - $(hostname)" "$EMAIL"
+            fi
+        fi
+    elif [ -z "$response_code" ]; then
+        log "TIMEOUT: $url - Request timed out after ${TIMEOUT}s"
+        
+        # Send timeout alert
+        if command -v mail >/dev/null 2>&1; then
+            echo "$url request timed out" | \
+            mail -s "HTTP Timeout Alert - $(hostname)" "$EMAIL"
+        fi
+    else
+        log "ERROR: $url - HTTP $response_code (${response_time}ms)"
+        
+        # Send error alert
+        if command -v mail >/dev/null 2>&1; then
+            echo "$url returned HTTP error $response_code" | \
+            mail -s "HTTP Error Alert - $(hostname)" "$EMAIL"
+        fi
+    fi
+}
+
+# Check each URL
+for url in "${URLS[@]}"; do
+    check_url "$url"
+done
+
+# Additional checks
+log "Performing additional HTTP checks..."
+
+# Check SSL certificate expiry (if applicable)
+for url in "${URLS[@]}"; do
+    if [[ "$url" == https://* ]]; then
+        hostname=$(echo "$url" | cut -d'/' -f3)
+        cert_info=$(echo | openssl s_client -servername "$hostname" -connect "${hostname}:443" 2>/dev/null | openssl x509 -noout -dates 2>/dev/null)
+        
+        if [ $? -eq 0 ]; then
+            expiry_date=$(echo "$cert_info" | grep notAfter | cut -d'=' -f2)
+            log "SSL cert for $hostname expires: $expiry_date"
+        fi
+    fi
+done
+
+log "HTTP response time check completed"
