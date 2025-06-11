@@ -1,0 +1,56 @@
+#!/bin/bash
+# uptime_check.sh - Monitor system uptime and performance
+
+# Configuration
+LOG_FILE="/var/log/uptime_check.log"
+EMAIL="admin@company.com"
+LOAD_THRESHOLD=2.0
+
+# Logging function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log "System uptime check started"
+
+# Get uptime information
+UPTIME_INFO=$(uptime)
+log "Current uptime: $UPTIME_INFO"
+
+# Extract load averages
+LOAD_1MIN=$(echo "$UPTIME_INFO" | awk -F'load average:' '{print $2}' | awk '{print $1}' | cut -d',' -f1)
+LOAD_5MIN=$(echo "$UPTIME_INFO" | awk -F'load average:' '{print $2}' | awk '{print $2}' | cut -d',' -f1)
+LOAD_15MIN=$(echo "$UPTIME_INFO" | awk -F'load average:' '{print $2}' | awk '{print $3}')
+
+log "Load averages: 1min=$LOAD_1MIN, 5min=$LOAD_5MIN, 15min=$LOAD_15MIN"
+
+# Check if load is too high
+if (( $(echo "$LOAD_1MIN > $LOAD_THRESHOLD" | bc -l) )); then
+    log "ALERT: High load average detected - $LOAD_1MIN"
+    
+    # Send alert
+    if command -v mail >/dev/null 2>&1; then
+        echo "High load average on $(hostname): $LOAD_1MIN" | \
+        mail -s "High Load Alert - $(hostname)" "$EMAIL"
+    fi
+fi
+
+# Get memory usage
+MEMORY_INFO=$(free -h)
+log "Memory usage:"
+echo "$MEMORY_INFO" | tee -a "$LOG_FILE"
+
+# Get disk usage
+DISK_INFO=$(df -h /)
+log "Root filesystem usage:"
+echo "$DISK_INFO" | tee -a "$LOG_FILE"
+
+# Get number of processes
+PROCESS_COUNT=$(ps aux | wc -l)
+log "Total processes: $PROCESS_COUNT"
+
+# Get logged in users
+USERS=$(who | wc -l)
+log "Logged in users: $USERS"
+
+log "System uptime check completed"
