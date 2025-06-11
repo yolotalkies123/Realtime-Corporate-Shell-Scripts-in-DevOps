@@ -1,0 +1,107 @@
+#!/bin/bash
+# package_update.sh - Automatic system package updates
+
+# Configuration
+LOG_FILE="/var/log/package_update.log"
+EMAIL="admin@company.com"
+REBOOT_REQUIRED_FILE="/var/run/reboot-required"
+
+# Logging function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log "Package update process started"
+
+# Detect package manager
+if command -v apt >/dev/null 2>&1; then
+    PACKAGE_MANAGER="apt"
+elif command -v yum >/dev/null 2>&1; then
+    PACKAGE_MANAGER="yum"
+elif command -v dnf >/dev/null 2>&1; then
+    PACKAGE_MANAGER="dnf"
+else
+    log "ERROR: No supported package manager found"
+    exit 1
+fi
+
+log "Using package manager: $PACKAGE_MANAGER"
+
+# Update package lists
+log "Updating package lists..."
+case $PACKAGE_MANAGER in
+    "apt")
+        apt update -y 2>&1 | tee -a "$LOG_FILE"
+        ;;
+    "yum")
+        yum check-update 2>&1 | tee -a "$LOG_FILE"
+        ;;
+    "dnf")
+        dnf check-update 2>&1 | tee -a "$LOG_FILE"
+        ;;
+esac
+
+# Check for available updates
+log "Checking for available updates..."
+case $PACKAGE_MANAGER in
+    "apt")
+        UPDATES=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
+        ;;
+    "yum")
+        UPDATES=$(yum list updates 2>/dev/null | grep -v "Updated Packages" | wc -l)
+        ;;
+    "dnf")
+        UPDATES=$(dnf list updates 2>/dev/null | grep -v "Available Upgrades" | wc -l)
+        ;;
+esac
+
+log "Available updates: $UPDATES"
+
+if [ "$UPDATES" -gt 0 ]; then
+    log "Installing security updates..."
+    
+    case $PACKAGE_MANAGER in
+        "apt")
+            # Install security updates only
+            apt upgrade -y 2>&1 | tee -a "$LOG_FILE"
+            ;;
+        "yum")
+            yum update -y --security 2>&1 | tee -a "$LOG_FILE"
+            ;;
+        "dnf")
+            dnf update -y --security 2>&1 | tee -a "$LOG_FILE"
+            ;;
+    esac
+    
+    log "Updates installed successfully"
+    
+    # Check if reboot is required
+    if [ -f "$REBOOT_REQUIRED_FILE" ]; then
+        log "NOTICE: System reboot required"
+        
+        if command -v mail >/dev/null 2>&1; then
+            echo "System $(hostname) requires a reboot after package updates" | \
+            mail -s "Reboot Required - $(hostname)" "$EMAIL"
+        fi
+    fi
+    
+else
+    log "No updates available"
+fi
+
+# Clean package cache
+log "Cleaning package cache..."
+case $PACKAGE_MANAGER in
+    "apt")
+        apt autoremove -y 2>&1 | tee -a "$LOG_FILE"
+        apt autoclean 2>&1 | tee -a "$LOG_FILE"
+        ;;
+    "yum")
+        yum clean all 2>&1 | tee -a "$LOG_FILE"
+        ;;
+    "dnf")
+        dnf clean all 2>&1 | tee -a "$LOG_FILE"
+        ;;
+esac
+
+log "Package update process completed"
